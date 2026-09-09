@@ -545,8 +545,12 @@ Run `/init` in a new session. Claude scans the repo and writes a `CLAUDE.md` at
 the root with structure, commands, and conventions. Review it and commit it — it
 loads at the start of every future session in that folder.
 
-Keep it under ~200 lines. Long files eat context and adherence drops. On
-v2.1.206+, `/doctor` proposes trims for a checked-in `CLAUDE.md`.
+**No length limit.** Length is a judgement call, not a rule — a long `CLAUDE.md`
+costs context every session, but a hard-won correction that isn't written down
+costs more than the tokens do. Write what the next session actually needs.
+
+If you do want a second opinion on trimming one, `/doctor` proposes cuts for a
+checked-in `CLAUDE.md` on v2.1.206+. Treat it as a suggestion.
 
 ### Cowork projects
 
