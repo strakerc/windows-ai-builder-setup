@@ -3,9 +3,9 @@
 **Straker's Windows setup.** Written up after doing it the hard way — the order
 and the warnings here exist because each one cost time.
 
-A reference for setting up Claude Code, Oh My Posh, Vim, less, wrangler and
-directory-restoring prompts on Windows — and for avoiding the trap that makes this take an hour
-instead of ten minutes.
+A reference for setting up Claude Code, Oh My Posh, Vim, less, wrangler,
+OpenCode and directory-restoring prompts on Windows — and for avoiding the
+trap that makes this take an hour instead of ten minutes.
 
 ### Scope and assumptions
 
@@ -646,6 +646,91 @@ account. Keep tokens out of the repo: `.dev.vars`, `.env` and friends belong in
 
 ---
 
+## Part 7: OpenCode (optional second agent)
+
+[OpenCode](https://opencode.ai/) is a separate, open-source terminal coding
+agent (from the team now at GitHub org `anomalyco`, still published under the
+`SST` name in some package managers) that talks to whichever model provider
+you point it at — Anthropic, OpenAI, GitHub Copilot, local models, and more.
+It's independent of Claude Code: different binary, different config, own
+session/auth state. Worth having alongside Claude Code if you want a second
+opinion from a different model, or a fallback when one provider is down.
+
+Upstream's own docs recommend WSL for "the best experience." This guide stays
+in scope with the rest of the document — native Windows, no WSL — and that
+works fine for normal use; treat the WSL note as upstream's preference, not a
+requirement.
+
+### Install
+
+Pick one. npm is the natural choice here since Node is already installed from
+the Prerequisites section above.
+
+```powershell
+npm install -g opencode-ai
+```
+
+Or via winget, matching the pattern from Part 1:
+
+```powershell
+winget install SST.opencode
+```
+
+(`SST.OpenCodeDesktop` is a separate package for the GUI desktop app, if you
+want that instead of or alongside the terminal CLI.)
+
+Chocolatey and Scoop both have packages too (`choco install opencode` /
+`scoop install opencode`) if you already use one of those. The curl one-liner
+advertised on the homepage (`curl -fsSL https://opencode.ai/install | bash`)
+needs a real `bash` — run it from a **Git Bash** tab, not PowerShell.
+
+**Close and reopen your terminal** after a winget or choco/scoop install, for
+the same reason `gh` and `claude` need it — see
+[Why a PATH change doesn't take effect](#why-a-path-change-doesnt-take-effect).
+The npm install doesn't have this problem: it lands in npm's existing global
+bin, which is already on PATH from the Node.js step.
+
+Verify:
+
+```powershell
+opencode --version
+```
+
+### Log in
+
+```powershell
+opencode auth login
+```
+
+or run `/connect` from inside the OpenCode TUI. Either way it opens a browser
+for OAuth (or prompts you to paste an API key, depending on the provider) and
+writes credentials to `~/.local/share/opencode/auth.json` — on Windows that
+resolves under `%USERPROFILE%\.local\share\opencode\auth.json`, the same
+`~`-under-`HOME` resolution Vim uses in Part 4.
+
+Like `gh auth login` and `wrangler login`, this is interactive and opens a
+browser — run it in a real terminal tab, not from inside Claude Code or
+another non-interactive shell.
+
+**If you plan to authenticate with an existing Claude Pro/Max subscription**
+rather than a separate Anthropic API key: OpenCode's own docs note that
+Anthropic's terms prohibit using a Claude subscription this way through
+third-party tools. Read that against your own Anthropic account terms before
+choosing it — an API key (pay-per-token, no such restriction) is the
+uncomplicated alternative and is what `ANTHROPIC_API_KEY` and most other
+providers' `*_API_KEY` env vars give you directly, without the `/connect`
+flow, if you'd rather skip OAuth entirely.
+
+### Project config
+
+`opencode init` (or the equivalent first-run prompt) writes an `AGENTS.md` at
+the project root — OpenCode's analogue of Claude Code's `CLAUDE.md`. Review
+and commit it the same way. Per-project provider settings, model
+allow/blocklists, and API-key env-var references go in an `opencode.json`
+file alongside it.
+
+---
+
 ## Why a PATH change doesn't take effect
 
 This costs more time than any other item in this document, because the symptom
@@ -728,6 +813,8 @@ That lasts until the shell closes and changes nothing permanent.
 | `wrangler` runs in one repo, not found in another | It is a devDependency, not a global install | `npm install --save-dev wrangler` in that repo |
 | `gh` not recognized right after `winget install` | Every process in the chain predates the machine-PATH update | Fully restart Terminal **and** the Claude Code app — don't add a duplicate PATH entry |
 | Setup works in one tab but not another | The two-PowerShell trap | Do it in both |
+| `opencode` not recognized right after `winget install` | Same stale-PATH issue as `gh` | Fully restart Terminal, then re-verify |
+| `opencode auth login` hangs or does nothing | Run from Claude Code or another non-interactive shell | Run it yourself in a real terminal tab |
 
 ---
 
@@ -749,3 +836,6 @@ gh auth status                      # gh installed and logged in
 ```
 
 If all ten look right in both 5.1 and 7, you're done.
+
+If you also set up Part 7, `opencode --version` is the equivalent check —
+left out of the count above since OpenCode is optional.
