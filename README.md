@@ -4,8 +4,8 @@
 and the warnings here exist because each one cost time.
 
 A reference for setting up Claude Code, Oh My Posh, Vim, less, wrangler,
-OpenCode and directory-restoring prompts on Windows — and for avoiding the
-trap that makes this take an hour instead of ten minutes.
+OpenCode, ShareX and directory-restoring prompts on Windows — and for avoiding
+the trap that makes this take an hour instead of ten minutes.
 
 ### Scope and assumptions
 
@@ -132,6 +132,27 @@ Use winget, not `Install-Module`. The PowerShell Gallery module installs to a
 install puts a binary on PATH that both editions can reach.
 
 Reopen your terminal, then verify with `oh-my-posh --version`.
+
+### ShareX (scrolling screenshots)
+
+Install manually from the Microsoft Store — search "ShareX" and click Get.
+(A `winget install ShareX.ShareX` package also exists if you'd rather script
+it, but the Store install is what this was verified against, and it's a
+one-off GUI install either way — nothing here needs to be repeatable.)
+
+The built-in Snipping Tool only captures what's on screen. For anything taller
+than one viewport — a long chat thread, a scrollable settings panel, a web page
+that doesn't fit — that means either multiple screenshots or a cropped one that
+leaves out the part that mattered. Pasting a partial screenshot into Claude
+Code means Claude only sees what you happened to capture, not the whole thing,
+which is easy to not notice until it answers based on a part you cut off.
+
+ShareX's **scrolling capture** stitches the full scrollable region into one
+image. It's a GUI capture tool, not a CLI — there's nothing to add to PATH or
+verify with a version flag. After installing, open it once from the Start menu
+so it finishes first-run setup, then use `Capture` → `Scrolling capture` (or
+its hotkey, configurable in ShareX's settings), drag a region over the
+scrollable area, and let it auto-scroll and stitch before saving.
 
 ---
 
@@ -839,3 +860,6 @@ If all ten look right in both 5.1 and 7, you're done.
 
 If you also set up Part 7, `opencode --version` is the equivalent check —
 left out of the count above since OpenCode is optional.
+
+ShareX has no CLI check — open it from the Start menu and confirm the tray
+icon appears.
