@@ -752,6 +752,225 @@ file alongside it.
 
 ---
 
+## Part 8: Reaching the PC while you're away (optional)
+
+Two separate problems hide behind "I want to use Claude Code from my phone":
+keeping a **session** reachable, and keeping the **machine** reachable. The
+first is a desktop-app behaviour that isn't documented anywhere obvious and
+cost an afternoon to work out. The second is Wake-on-LAN, and is for desktops
+only.
+
+### How remote sessions actually work
+
+The claude.ai/code web view and the mobile app don't talk to your PC. They
+talk to a **session process** — one `claude.exe` per open session, spawned by
+the desktop app. If that process isn't running, the session shows
+*"Can't reach your computer. It may be asleep or offline"* even though the PC
+is on and other sessions answer fine. The banner is about the session, not
+the machine.
+
+What kills session processes:
+
+- **A reboot.** Every session, including ones that were mid-task. A driver
+  update that asks to restart is enough.
+- **Quitting the desktop app.**
+
+What doesn't: sleep and wake, the screen locking, or switching between
+sessions in the sidebar. A session you opened earlier keeps its process while
+you work in another.
+
+See which sessions are actually alive, from any PowerShell tab:
+
+```powershell
+Get-CimInstance Win32_Process |
+  Where-Object { $_.CommandLine -match 'claude-code.*--resume=' } |
+  ForEach-Object { '{0}  {1}' -f $_.CreationDate.ToString('HH:mm:ss'),
+    [regex]::Match($_.CommandLine, '--model (\S+)').Groups[1].Value }
+```
+
+One line per live session, with its start time and model. If a session you
+want isn't there, it isn't reachable.
+
+**Before you leave the house:**
+
+1. Open every session you might want, in the desktop app, on the PC. Open
+   means it has a process. Open a spare one in the repo you're most likely to
+   need — see below for why.
+2. Don't reboot afterwards. Finish driver and Windows updates first.
+3. Stop the sleep timer. The High Performance plan still sleeps after 15
+   minutes on AC by default, which is long enough to lose the whole trip:
+
+   ```powershell
+   powercfg /change standby-timeout-ac 0
+   ```
+
+   Put it back when you're home (`powercfg /change standby-timeout-ac 30`).
+
+**A live session can wake a dead one.** Any running session can send a
+message to any other session in the sidebar through its session-management
+tool, and the target's process starts to handle the message. From then on the
+target is reachable from your phone too. Ask the live session something like
+*"send a message to the Lineup backtest session to bring it back online — no
+work needed, reply in one line"*. It costs one short turn of the target's
+model and leaves a "From *<session>*" note in that conversation, which is a
+fair price. This is how sessions killed by a reboot were recovered from a
+phone on 13 Sep 2026, and it's why the spare session in point 1 matters: as
+long as one session in the list is alive, the rest can be brought back.
+
+### Remote desktop
+
+The session route gives you a terminal, which covers most of what you'd
+actually do. If you want the screen as well, both good options need a UAC
+click on the PC, so set them up before you go, not from the road.
+
+- **Tailscale + Remote Desktop.** Windows 11 Pro already has the RDP host;
+  Tailscale gives the PC a private address reachable from anywhere without
+  touching the router. Microsoft's *Windows App* is the Android/iOS client.
+  RDP logs in with your **Microsoft account password**, not the Windows Hello
+  PIN — check you know it. The same Tailscale install is also the foundation
+  for waking the PC from outside the house (below).
+- **Chrome Remote Desktop.** Least setup: extension, host install, PIN. Lower
+  quality and no help with wake, but ten minutes.
+
+TeamViewer and AnyDesk add nothing over these for one person and one PC, and
+both nag about commercial use.
+
+### Wake-on-LAN (desktops only)
+
+**Is this a desktop you'll want to wake remotely for Claude Code access from
+afar?** If not, or it's a laptop, skip to the next section. Laptops on Wi-Fi
+don't wake reliably and shouldn't be left asleep on a shelf anyway.
+
+> **Status, 13 Sep 2026:** set up but not yet proven. On the reference machine
+> (Gigabyte X870E AORUS PRO, Realtek RTL8125 2.5GbE, eero router, Windows 11
+> Pro, classic S3 sleep) every prerequisite below checks out, but the first
+> wake attempt from a phone on the same Wi-Fi failed, and a packet capture on
+> the PC saw no magic packet arrive at all. The remaining suspects are at the
+> end. This section will be corrected as the cause is found.
+
+Wake-on-LAN is a "magic packet" broadcast on the local network that the
+network card listens for while the PC sleeps. Everything below is about
+making sure the card is listening and the packet can reach it.
+
+**1. Confirm the sleep state.** Classic S3 standby is what works. Modern
+Standby (*S0 Low Power Idle*) is common on laptops and some newer desktops,
+and wake from it is hit and miss.
+
+```powershell
+powercfg /a
+```
+
+You want `Standby (S3)` under *available* and `S0 Low Power Idle` under *not
+available*.
+
+**2. Use the wired port** and note its MAC. Wi-Fi adapters drop their link
+during sleep on most consumer hardware; the magic packet goes to the wired
+MAC.
+
+```powershell
+Get-NetAdapter | Select-Object Name, Status, MacAddress, LinkSpeed
+```
+
+**3. Adapter settings.** Device Manager → the Ethernet adapter → *Power
+Management*: tick *Allow this device to wake the computer* and *Only allow a
+magic packet*. Then on *Advanced*, check the driver's own switches:
+
+```powershell
+Get-NetAdapterAdvancedProperty -Name Ethernet |
+  Where-Object DisplayName -match 'Wake|Shutdown|Energy|Green' |
+  Select-Object DisplayName, DisplayValue
+```
+
+*Wake on Magic Packet* and *Shutdown Wake-On-Lan* should be Enabled.
+*Energy-Efficient Ethernet* and *Green Ethernet* are the usual cause of
+intermittent failures because they let the link drop during sleep — turn them
+off from an elevated prompt if wake is unreliable:
+
+```powershell
+Set-NetAdapterAdvancedProperty -Name Ethernet -DisplayName 'Energy-Efficient Ethernet' -DisplayValue Disabled
+Set-NetAdapterAdvancedProperty -Name Ethernet -DisplayName 'Green Ethernet' -DisplayValue Disabled
+```
+
+Verify Windows has armed the adapter — it should be in this list:
+
+```powershell
+powercfg /devicequery wake_armed
+```
+
+If `Get-NetAdapterPowerManagement` throws *"A device attached to the system
+is not functioning"* on a Realtek adapter, ignore it. It does that on every
+driver version tried; `powercfg` and the advanced properties are the checks
+that count.
+
+**4. BIOS.** The one thing Windows can't verify. On Gigabyte boards it's
+*Settings → Platform Power*: **ErP** must be *Disabled* (it cuts standby
+power to the network card) and **Wake on LAN** *Enabled*. Other vendors call
+it *Power On By PCI-E*, *Resume by LAN*, or *PME Event Wake Up*.
+
+**5. Fast Startup.** Leave it on unless wake from a full shutdown fails, in
+which case (elevated):
+
+```powershell
+Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' -Name HiberbootEnabled -Value 0
+```
+
+**6. DHCP reservation** for the wired MAC, so remote-desktop clients have a
+fixed address to come back to after the wake. On eero: *Settings → Advanced
+Networking → Reservations & port forwarding → Add a reservation*, pick the
+wired entry (the app shows a generic Wi-Fi icon for wired devices too — check
+the MAC). Other routers: *DHCP → Address reservation* or *Static lease*.
+
+**7. The phone app.** *WolOn* (Android, Darkside Dev) is well maintained.
+Enter the wired MAC, the network's broadcast address (your subnet with `.255`
+at the end, e.g. `192.168.4.255`), port 9. **Wait 20–30 seconds after the
+screen goes dark before sending**, and send two or three times: the Realtek
+card drops the link and renegotiates at 10 Mbps when the PC sleeps, and
+packets sent during that window are lost.
+
+**8. When it doesn't work**, split the problem in half. First, what actually
+woke the PC last time (a USB device means the network card never fired):
+
+```powershell
+powercfg /lastwake
+```
+
+Then, with the PC awake, capture on the network card while you tap the app.
+This tells you whether the packet reaches the PC at all. Elevated prompt:
+
+```powershell
+$etl = "$env:TEMP\wol.etl"; $txt = "$env:TEMP\wol.txt"
+pktmon filter remove | Out-Null
+pktmon filter add wol9 --transport UDP --port 9 | Out-Null
+pktmon filter add wol7 --transport UDP --port 7 | Out-Null
+pktmon start --capture --comp nics -f $etl | Out-Null
+Write-Host "Tap the device in the WoL app now (45 s)..."; Start-Sleep 45
+pktmon stop | Out-Null; pktmon filter remove | Out-Null
+pktmon etl2txt $etl -o $txt | Out-Null
+$hits = Select-String -Path $txt -Pattern '\.(9|7):' | ForEach-Object Line
+if ($hits) { "Magic packet reached the NIC:"; $hits } else { "Nothing arrived on port 9 or 7." }
+```
+
+- **Nothing arrived:** the phone is on a guest Wi-Fi (eero's guest network
+  isolates clients from the wired LAN), a VPN on the phone is swallowing the
+  broadcast, or the MAC/broadcast address is wrong. Check the phone's
+  network in the eero app's *Devices* tab.
+- **Arrived, but the PC didn't wake:** BIOS (step 4) or the power-saving
+  Ethernet options (step 3).
+
+*Open question on the reference machine:* the capture reported nothing with
+the app correctly configured. The capture itself hasn't yet been proven to
+see a packet, so the next run sends one from the PC's own port first as a
+control before trusting a "nothing arrived" result.
+
+**From outside the house** the broadcast doesn't cross the internet, and eero
+(like most consumer routers) won't forward a port to the broadcast address.
+Something on the home network has to send the packet for you: a Raspberry
+Pi, NAS, or old phone that stays on, reached over Tailscale; or Home
+Assistant, which has a Wake-on-LAN switch built in. Tailscale on the desktop
+itself doesn't help — the desktop is the thing that's asleep.
+
+---
+
 ## Why a PATH change doesn't take effect
 
 This costs more time than any other item in this document, because the symptom
@@ -836,6 +1055,10 @@ That lasts until the shell closes and changes nothing permanent.
 | Setup works in one tab but not another | The two-PowerShell trap | Do it in both |
 | `opencode` not recognized right after `winget install` | Same stale-PATH issue as `gh` | Fully restart Terminal, then re-verify |
 | `opencode auth login` hangs or does nothing | Run from Claude Code or another non-interactive shell | Run it yourself in a real terminal tab |
+| Phone/web shows "Can't reach your computer" for one session while the PC is on | That session has no live process — a reboot killed it, or it hasn't been opened since | Open it on the PC, or ask a live session to send it a message (Part 8) |
+| PC went to sleep during a trip despite being "left on" | High Performance plan still sleeps after 15 min on AC | `powercfg /change standby-timeout-ac 0` |
+| Wake-on-LAN: packet never reaches the PC (pktmon test) | Phone on guest Wi-Fi, VPN on the phone, or wrong MAC/broadcast | Check the phone's network in the router app; re-enter the wired MAC |
+| Wake-on-LAN: packet arrives but the PC stays asleep | BIOS ErP on / Wake on LAN off, or Energy-Efficient Ethernet dropped the link | BIOS *Platform Power*; disable EEE and Green Ethernet |
 
 ---
 
@@ -860,6 +1083,10 @@ If all ten look right in both 5.1 and 7, you're done.
 
 If you also set up Part 7, `opencode --version` is the equivalent check —
 left out of the count above since OpenCode is optional.
+
+If you set up Part 8 on a desktop, `powercfg /devicequery wake_armed` should
+list the Ethernet adapter and `powercfg /a` should show `Standby (S3)` as
+available. Also optional.
 
 ShareX has no CLI check — open it from the Start menu and confirm the tray
 icon appears.
