@@ -1038,7 +1038,7 @@ the MAC). Other routers: *DHCP → Address reservation* or *Static lease*.
 **7. The phone app — and the one thing that actually mattered.** *WolOn*
 (Android, Darkside Dev) is well maintained. Enter the wired MAC and port 9.
 For the address field, **use the PC's own reserved IP (e.g.
-`192.168.4.179`), not the broadcast address.**
+`192.168.1.50`), not the broadcast address.**
 
 A magic packet is conventionally broadcast to `x.x.x.255` so that every
 device on the segment hears it, and every guide tells you to do that. On a
@@ -1072,7 +1072,7 @@ whether it reaches the machine at all, and unlike a `pktmon` capture it
 verifies itself first. Elevated prompt:
 
 ```powershell
-$mac  = [byte[]](0x10,0xFF,0xE0,0x8D,0x44,0x3D)      # your wired MAC
+$mac  = [byte[]](0xAA,0xBB,0xCC,0xDD,0xEE,0xFF)      # your wired MAC
 $myIp = (Get-NetIPAddress -InterfaceAlias Ethernet -AddressFamily IPv4).IPAddress
 $pkt  = [byte[]](,0xFF*6) + ($mac*16)
 
