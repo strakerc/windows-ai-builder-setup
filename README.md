@@ -819,21 +819,123 @@ long as one session in the list is alive, the rest can be brought back.
 
 ### Remote desktop
 
-The session route gives you a terminal, which covers most of what you'd
-actually do. If you want the screen as well, both good options need a UAC
-click on the PC, so set them up before you go, not from the road.
+The session route above gives you a terminal, which covers most of what you'd
+actually do. If you want the screen as well, everything here needs a UAC click
+on the PC, so set it up before you travel, not from the road.
 
-- **Tailscale + Remote Desktop.** Windows 11 Pro already has the RDP host;
-  Tailscale gives the PC a private address reachable from anywhere without
-  touching the router. Microsoft's *Windows App* is the Android/iOS client.
-  RDP logs in with your **Microsoft account password**, not the Windows Hello
-  PIN — check you know it. The same Tailscale install is also the foundation
-  for waking the PC from outside the house (below).
-- **Chrome Remote Desktop.** Least setup: extension, host install, PIN. Lower
-  quality and no help with wake, but ten minutes.
+**Windows Remote Desktop** is the best quality option and Windows 11 Pro
+already has the host. Turn it on from an elevated prompt:
+
+```powershell
+Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' `
+  -Name fDenyTSConnections -Value 0
+Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+  -Name UserAuthentication -Value 1          # require Network Level Authentication
+Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'
+Get-NetFirewallRule -DisplayGroup 'Remote Desktop' |
+  Where-Object DisplayName -notmatch 'Shadow' |
+  Set-NetFirewallRule -Profile 'Private,Domain'   # deliberately not Public
+```
+
+**Check the network profile, or none of that takes effect.** Windows often
+classifies a home network as *Public*, and the rules above only apply to
+*Private*. This is silent - Remote Desktop listens on 3389 and simply never
+answers:
+
+```powershell
+Get-NetConnectionProfile | Select-Object InterfaceAlias, NetworkCategory
+Set-NetConnectionProfile -InterfaceAlias Ethernet -NetworkCategory Private
+```
+
+The Android/iOS client is Microsoft's **Windows App** (formerly Microsoft
+Remote Desktop). Connect to the PC's reserved IP. You'll get a certificate
+warning: the RDP certificate is self-signed by the PC and no public authority
+issues certificates for private addresses, so it is expected. Verify it rather
+than clicking through blind - the app shows a **SHA-256** thumbprint, so
+compare against that, not the SHA-1 one Windows shows by default:
+
+```powershell
+$c = Get-ChildItem 'Cert:\LocalMachine\Remote Desktop' | Select-Object -First 1
+($([Security.Cryptography.SHA256]::Create().ComputeHash($c.RawData)) |
+  ForEach-Object { '{0:X2}' -f $_ }) -join ':'
+```
+
+#### The Microsoft account password trap
+
+This is the part that will cost you an evening, so read it before you start.
+
+Remote Desktop cannot use a Windows Hello PIN. Hello is device-bound by
+design, and RDP creates a *new* session that demands a password up front. So
+you need the account's password, and on a Microsoft account that is where it
+gets strange:
+
+- **Windows keeps its own cached copy of the password**, made when it was last
+  set *on that machine*. Check with `(Get-LocalUser -Name <you>).PasswordLastSet`.
+- **Sign-in never contacts Microsoft.** Both the lock screen and RDP compare
+  against that cached copy only. Verified by the complete absence of
+  Microsoft-Account identity events across repeated sign-ins.
+- So if you changed your Microsoft password online and have signed in with a
+  PIN ever since, **the machine still wants the old one** - the current one is
+  correct everywhere except here. Rebooting does not fix it, and neither does
+  resetting the password online.
+- `Ctrl+Alt+Del` has **no "Change a password"** option for a Microsoft account.
+  That's normal, not a policy problem.
+- *Settings > Accounts > Your info* offers no Verify prompt either, because
+  Windows doesn't know the two have diverged.
+
+The practical answer is to use the old password for RDP and record it as the
+Windows sign-in password, separate from the Microsoft account one. If you
+want them unified, the only reliable route is *Sign in with a local account
+instead* on that same Settings page, which gives you one password you control
+at the cost of Microsoft account sync.
+
+**If the lock screen won't even offer a password box**, the passwordless
+experience is switched on. Turn it off (elevated), then reboot:
+
+```powershell
+Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device' `
+  -Name DevicePasswordLessBuildVersion -Value 0 -Type DWord
+```
+
+Set it back to `2` to restore Hello-only sign-in.
+
+**To diagnose a rejected login**, read the substatus rather than guessing. It
+distinguishes a wrong password from a missing account outright, and needs an
+elevated prompt:
+
+```powershell
+Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625; StartTime=(Get-Date).AddMinutes(-30)} |
+  ForEach-Object {
+    [regex]::Match($_.Message,'Sub Status:\s*(\S+)').Groups[1].Value
+  }
+```
+
+`0xc000006a` means wrong password with the account found - which also proves a
+password hash exists. `0xc000006e` usually means the account has no usable
+password at all.
+
+#### Chrome Remote Desktop, which sidesteps all of that
+
+If the password turns into a dead end, **Chrome Remote Desktop shares the
+session that is already running** rather than creating a new one. You see the
+real screen, so if Windows is locked you type your **PIN** through it exactly
+as if you were sitting at the desk. No Windows password anywhere in the flow.
+
+It's lower quality than RDP and Google brokers the connection, but for
+reaching a home PC from a phone neither matters much. Setup is a Chrome
+extension, a host install and a PIN you choose.
+
+**RemoteApp** - the *Apps* tab in the Windows App, which publishes individual
+programs instead of a whole desktop - needs Windows Server with the Remote
+Desktop Services role. No edition of Windows 11 has it, so that tab will
+always read "No connected apps".
 
 TeamViewer and AnyDesk add nothing over these for one person and one PC, and
 both nag about commercial use.
+
+**From outside the house**, never expose RDP directly to the internet. Put
+Tailscale in front of it; the same install is the foundation for waking the PC
+remotely (see the end of the next section).
 
 ### Wake-on-LAN (desktops only)
 
