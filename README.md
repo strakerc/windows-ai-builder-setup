@@ -841,12 +841,14 @@ both nag about commercial use.
 afar?** If not, or it's a laptop, skip to the next section. Laptops on Wi-Fi
 don't wake reliably and shouldn't be left asleep on a shelf anyway.
 
-> **Status, 13 Sep 2026:** set up but not yet proven. On the reference machine
-> (Gigabyte X870E AORUS PRO, Realtek RTL8125 2.5GbE, eero router, Windows 11
-> Pro, classic S3 sleep) every prerequisite below checks out, but the first
-> wake attempt from a phone on the same Wi-Fi failed, and a packet capture on
-> the PC saw no magic packet arrive at all. The remaining suspects are at the
-> end. This section will be corrected as the cause is found.
+> **Status, 23 Sep 2026: working.** On the reference machine (Gigabyte X870E
+> AORUS PRO, Realtek RTL8125 2.5GbE, six-node eero mesh, Windows 11 Pro, S3
+> sleep) the cause turned out to be the router, not the PC. **eero silently
+> drops the subnet broadcast to a wired client but forwards unicast fine.**
+> Addressing the magic packet to the PC's own reserved IP instead of
+> `x.x.x.255` made it wake first try. Every Windows- and BIOS-side setting
+> had been correct for eleven days while the packet was never arriving at
+> all. Step 7 is the one that matters; step 8 is how to prove it yourself.
 
 Wake-on-LAN is a "magic packet" broadcast on the local network that the
 network card listens for while the PC sleeps. Everything below is about
@@ -891,6 +893,17 @@ Set-NetAdapterAdvancedProperty -Name Ethernet -DisplayName 'Energy-Efficient Eth
 Set-NetAdapterAdvancedProperty -Name Ethernet -DisplayName 'Green Ethernet' -DisplayValue Disabled
 ```
 
+Also confirm **ARP Offload** is enabled on the same *Advanced* tab. It lets
+the card answer address queries by itself while the PC sleeps, so the router
+never forgets which port the machine is on. This is what makes the unicast
+approach in step 7 survive a long sleep:
+
+```powershell
+Get-NetAdapterAdvancedProperty -Name Ethernet |
+  Where-Object DisplayName -match 'ARP Offload' |
+  Select-Object DisplayName, DisplayValue
+```
+
 Verify Windows has armed the adapter — it should be in this list:
 
 ```powershell
@@ -920,54 +933,107 @@ Networking → Reservations & port forwarding → Add a reservation*, pick the
 wired entry (the app shows a generic Wi-Fi icon for wired devices too — check
 the MAC). Other routers: *DHCP → Address reservation* or *Static lease*.
 
-**7. The phone app.** *WolOn* (Android, Darkside Dev) is well maintained.
-Enter the wired MAC, the network's broadcast address (your subnet with `.255`
-at the end, e.g. `192.168.4.255`), port 9. **Wait 20–30 seconds after the
-screen goes dark before sending**, and send two or three times: the Realtek
-card drops the link and renegotiates at 10 Mbps when the PC sleeps, and
-packets sent during that window are lost.
+**7. The phone app — and the one thing that actually mattered.** *WolOn*
+(Android, Darkside Dev) is well maintained. Enter the wired MAC and port 9.
+For the address field, **use the PC's own reserved IP (e.g.
+`192.168.4.179`), not the broadcast address.**
+
+A magic packet is conventionally broadcast to `x.x.x.255` so that every
+device on the segment hears it, and every guide tells you to do that. On a
+mesh router it can fail silently. An eero forwards unicast to a wired client
+perfectly but drops the directed broadcast, so the packet leaves the phone
+and never arrives — no error anywhere, on either end. If your WoL app has a
+field labelled *Broadcast Address*, put the host address in it anyway.
+
+Unicast works against a sleeping machine only because the card answers ARP
+on its own (**ARP Offload**, step 3). Without that the router eventually
+forgets where the sleeping host lives and the packet is dropped instead.
+
+Still **wait 20–30 seconds after the screen goes dark before sending**, and
+send two or three times.
 
 **8. When it doesn't work**, split the problem in half. First, what actually
-woke the PC last time (a USB device means the network card never fired):
+woke the PC last time. A USB device means the network card never fired:
 
 ```powershell
 powercfg /lastwake
 ```
 
-Then, with the PC awake, capture on the network card while you tap the app.
-This tells you whether the packet reaches the PC at all. Elevated prompt:
+Note that `powercfg /lastwake` and the *Power-Troubleshooter* event log are
+the only trustworthy record. The Kernel-Power "resumed from sleep" event is
+stamped with the clock from *before* the machine slept, because the system
+clock stops during S3 and has not resynced when that event is written — so a
+genuine hour-long sleep can look like one second. Don't diagnose from it.
+
+Then, with the PC **awake**, listen for the packet directly. This proves
+whether it reaches the machine at all, and unlike a `pktmon` capture it
+verifies itself first. Elevated prompt:
 
 ```powershell
-$etl = "$env:TEMP\wol.etl"; $txt = "$env:TEMP\wol.txt"
-pktmon filter remove | Out-Null
-pktmon filter add wol9 --transport UDP --port 9 | Out-Null
-pktmon filter add wol7 --transport UDP --port 7 | Out-Null
-pktmon start --capture --comp nics -f $etl | Out-Null
-Write-Host "Tap the device in the WoL app now (45 s)..."; Start-Sleep 45
-pktmon stop | Out-Null; pktmon filter remove | Out-Null
-pktmon etl2txt $etl -o $txt | Out-Null
-$hits = Select-String -Path $txt -Pattern '\.(9|7):' | ForEach-Object Line
-if ($hits) { "Magic packet reached the NIC:"; $hits } else { "Nothing arrived on port 9 or 7." }
+$mac  = [byte[]](0x10,0xFF,0xE0,0x8D,0x44,0x3D)      # your wired MAC
+$myIp = (Get-NetIPAddress -InterfaceAlias Ethernet -AddressFamily IPv4).IPAddress
+$pkt  = [byte[]](,0xFF*6) + ($mac*16)
+
+New-NetFirewallRule -DisplayName TEMP-WOL -Direction Inbound -Protocol UDP `
+  -LocalPort 9 -Action Allow -Profile Any | Out-Null
+$udp = New-Object Net.Sockets.UdpClient
+$udp.Client.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Any, 9))
+$udp.Client.ReceiveTimeout = 500
+
+# Controls: loopback and self-unicast DO come back. A broadcast does NOT
+# return to its own sender, so it is useless as a self-test.
+$s = New-Object Net.Sockets.UdpClient
+$s.Send($pkt,$pkt.Length,'127.0.0.1',9) | Out-Null
+$s.Send($pkt,$pkt.Length,$myIp,9)       | Out-Null
+$s.Close()
+
+Write-Host 'Tap the WoL app now (45 s)...'
+$end = (Get-Date).AddSeconds(45)
+while ((Get-Date) -lt $end) {
+  $ep = [Net.IPEndPoint]::new([Net.IPAddress]::Any,0)
+  try { $d = $udp.Receive([ref]$ep); "  from $($ep.Address)  $($d.Length) bytes" } catch {}
+}
+$udp.Close(); Remove-NetFirewallRule -DisplayName TEMP-WOL
 ```
 
-- **Nothing arrived:** the phone is on a guest Wi-Fi (eero's guest network
-  isolates clients from the wired LAN), a VPN on the phone is swallowing the
-  broadcast, or the MAC/broadcast address is wrong. Check the phone's
-  network in the eero app's *Devices* tab.
-- **Arrived, but the PC didn't wake:** BIOS (step 4) or the power-saving
-  Ethernet options (step 3).
+Read it like this:
 
-*Open question on the reference machine:* the capture reported nothing with
-the app correctly configured. The capture itself hasn't yet been proven to
-see a packet, so the next run sends one from the PC's own port first as a
-control before trusting a "nothing arrived" result.
+- **Controls didn't come back:** the listener is broken; the run says nothing
+  about the phone. Fix that before concluding anything.
+- **Controls came back, phone didn't:** the packet is not reaching the PC.
+  Switch the app from the broadcast address to the host address (step 7).
+  If that still fails, check the phone is on the main network rather than
+  Guest, and that no VPN is active on it.
+- **Phone's packets arrived but the PC won't wake from sleep:** now, and only
+  now, the BIOS (step 4) and the power-saving Ethernet options (step 3) are
+  worth suspecting.
 
-**From outside the house** the broadcast doesn't cross the internet, and eero
-(like most consumer routers) won't forward a port to the broadcast address.
-Something on the home network has to send the packet for you: a Raspberry
-Pi, NAS, or old phone that stays on, reached over Tailscale; or Home
-Assistant, which has a Wake-on-LAN switch built in. Tailscale on the desktop
-itself doesn't help — the desktop is the thing that's asleep.
+A `pktmon` capture is the obvious tool here and it silently captured nothing
+on the reference machine, costing days. If you use it, always send yourself
+a control packet first.
+
+**From outside the house**, the unicast trick in step 7 changes the picture.
+The two things that normally make waking over the internet impossible are
+that a broadcast can't cross it and that routers won't forward a port to a
+broadcast address. Neither applies once you're sending to the host address,
+and ARP Offload stops the router forgetting a sleeping machine. So a plain
+port forward of UDP 9 to the PC's reserved IP has a real chance of working,
+where the conventional broadcast setup never would.
+
+Two things still get in the way, and neither is about Wake-on-LAN: your home
+IP changes unless you set up dynamic DNS, and if your ISP uses carrier-grade
+NAT nothing inbound reaches you at all.
+
+The robust answer remains a relay — a Raspberry Pi, NAS, or old phone that
+stays on at home, reached over Tailscale, sending the packet locally. Home
+Assistant has a Wake-on-LAN switch built in and its app works from anywhere.
+Tailscale on the desktop itself doesn't help; the desktop is the thing
+that's asleep.
+
+On the security of forwarding UDP 9: a magic packet can only wake the
+machine, not reach anything on it. The worst a stranger can do is turn your
+PC on. Still, a relay behind Tailscale exposes nothing at all, which is why
+it's the better long-term shape.
 
 ---
 
@@ -1057,7 +1123,8 @@ That lasts until the shell closes and changes nothing permanent.
 | `opencode auth login` hangs or does nothing | Run from Claude Code or another non-interactive shell | Run it yourself in a real terminal tab |
 | Phone/web shows "Can't reach your computer" for one session while the PC is on | That session has no live process — a reboot killed it, or it hasn't been opened since | Open it on the PC, or ask a live session to send it a message (Part 8) |
 | PC went to sleep during a trip despite being "left on" | High Performance plan still sleeps after 15 min on AC | `powercfg /change standby-timeout-ac 0` |
-| Wake-on-LAN: packet never reaches the PC (pktmon test) | Phone on guest Wi-Fi, VPN on the phone, or wrong MAC/broadcast | Check the phone's network in the router app; re-enter the wired MAC |
+| Wake-on-LAN: packet never reaches the PC | Mesh router (eero) drops the subnet broadcast to wired clients | Address the packet to the PC's reserved IP, not `x.x.x.255` (Part 8, step 7) |
+| Sleep looks like it lasts 1 second in Event Viewer | Kernel-Power resume event is stamped with the pre-sleep clock | Use `powercfg /lastwake` and Power-Troubleshooter instead |
 | Wake-on-LAN: packet arrives but the PC stays asleep | BIOS ErP on / Wake on LAN off, or Energy-Efficient Ethernet dropped the link | BIOS *Platform Power*; disable EEE and Green Ethernet |
 
 ---
