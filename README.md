@@ -806,6 +806,27 @@ want isn't there, it isn't reachable.
 
    Put it back when you're home (`powercfg /change standby-timeout-ac 30`).
 
+#### Remote Control is a second, separate switch
+
+A live process is necessary but **not sufficient**. The session also needs
+**Remote Control** turned on, which is what links it to your claude.ai account
+so it appears in the Code section of the phone app. A session can be running
+perfectly and still be invisible there because that switch is off.
+
+It's a toggle in the desktop app's toolbar. There is no `claude rc` command.
+You can also just ask a session to turn it on, for itself or another session.
+
+So the two failure modes look different and have different fixes:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Session missing from the app entirely | Remote Control off | Toggle it on |
+| Session listed but "Can't reach your computer" | No live process | Open it on the PC, or have a live session message it |
+
+**Keep one lifeline session open with Remote Control on.** From it you can
+start and expose all the others remotely. With none, bootstrapping from away
+needs Remote Desktop or a trip to the machine.
+
 **A live session can wake a dead one.** Any running session can send a
 message to any other session in the sidebar through its session-management
 tool, and the target's process starts to handle the message. From then on the
