@@ -1222,6 +1222,35 @@ $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable
 ```
 
+**Never put `pwsh.exe` in a scheduled task by name.** If PowerShell 7 came
+from the Microsoft Store it lives under `WindowsApps` behind an execution
+alias, and Task Scheduler cannot follow that alias. The task fails with
+`2147942402` (`0x80070002`, "cannot find the file"), which says nothing about
+the real cause, and it fails *silently* - there is no notification, and a
+DDNS record that stops updating looks exactly like a working one until your
+address changes weeks later.
+
+Give it a real path. Either PowerShell 7's own, when it was installed by MSI
+rather than the Store, or Windows PowerShell, which is always at a fixed
+location:
+
+```powershell
+$exe = Get-ChildItem 'C:\Program Files\PowerShell' -Directory -ErrorAction SilentlyContinue |
+       ForEach-Object { Join-Path $_.FullName 'pwsh.exe' } |
+       Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $exe) { $exe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" }
+
+New-ScheduledTaskAction -Execute $exe -Argument "-NoProfile -NonInteractive ..."
+```
+
+**Always verify a scheduled task actually ran**, rather than trusting that
+registering it was enough:
+
+```powershell
+Get-ScheduledTaskInfo -TaskName '<name>' |
+  Select-Object LastRunTime, LastTaskResult, NextRunTime   # LastTaskResult 0 = success
+```
+
 Then point the Away entry at `<subdomain>.duckdns.org` instead of the raw
 address. **Check the spelling.** A `.com` for `.org` fails exactly like a
 broken setup, with no error from the app and nothing in any log.
@@ -1335,6 +1364,7 @@ That lasts until the shell closes and changes nothing permanent.
 | Wake-on-LAN: packet never reaches the PC | Mesh router (eero) drops the subnet broadcast to wired clients | Address the packet to the PC's reserved IP, not `x.x.x.255` (Part 8, step 7) |
 | Sleep looks like it lasts 1 second in Event Viewer | Kernel-Power resume event is stamped with the pre-sleep clock | Use `powercfg /lastwake` and Power-Troubleshooter instead |
 | Wake-on-LAN: packet arrives but the PC stays asleep | BIOS ErP on / Wake on LAN off, or Energy-Efficient Ethernet dropped the link | BIOS *Platform Power*; disable EEE and Green Ethernet |
+| Scheduled task fails with `2147942402` and no other clue | `pwsh.exe` given by name, but it is a Store build behind a `WindowsApps` alias Task Scheduler cannot follow | Use a real path to the executable (Part 8) |
 
 ---
 
