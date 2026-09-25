@@ -1135,28 +1135,75 @@ A `pktmon` capture is the obvious tool here and it silently captured nothing
 on the reference machine, costing days. If you use it, always send yourself
 a control packet first.
 
-**From outside the house**, the unicast trick in step 7 changes the picture.
-The two things that normally make waking over the internet impossible are
-that a broadcast can't cross it and that routers won't forward a port to a
-broadcast address. Neither applies once you're sending to the host address,
-and ARP Offload stops the router forgetting a sleeping machine. So a plain
-port forward of UDP 9 to the PC's reserved IP has a real chance of working,
-where the conventional broadcast setup never would.
+**From outside the house**, the unicast trick in step 7 changes everything,
+and the answer turns out to be much simpler than the usual advice.
 
-Two things still get in the way, and neither is about Wake-on-LAN: your home
-IP changes unless you set up dynamic DNS, and if your ISP uses carrier-grade
-NAT nothing inbound reaches you at all.
+The two reasons waking over the internet is "impossible" are that a broadcast
+cannot cross it and that routers refuse to forward a port to a broadcast
+address. **Neither applies once you send to the host address.** A plain port
+forward then works, and no relay, VPN or extra hardware is needed. This was
+proven end to end on the reference setup: phone on cellular, packet through
+the forward, machine awake, `powercfg /lastwake` naming the network card.
 
-The robust answer remains a relay — a Raspberry Pi, NAS, or old phone that
-stays on at home, reached over Tailscale, sending the packet locally. Home
-Assistant has a Wake-on-LAN switch built in and its app works from anywhere.
-Tailscale on the desktop itself doesn't help; the desktop is the thing
-that's asleep.
+**1. Check for carrier-grade NAT first**, because it is the one thing that
+kills this outright. Compare what the internet sees with your router's WAN
+address:
 
-On the security of forwarding UDP 9: a magic packet can only wake the
-machine, not reach anything on it. The worst a stranger can do is turn your
-PC on. Still, a relay behind Tailscale exposes nothing at all, which is why
-it's the better long-term shape.
+```powershell
+Invoke-RestMethod https://api.ipify.org     # what the internet sees
+```
+
+Then find the WAN address in your router (on eero: *Settings > Advanced
+networking > Internet > WAN IP address*). **If they match, you're fine.** If
+the router shows something in `100.64.x.x`-`100.127.x.x`, you are behind
+CGNAT, inbound forwarding is impossible, and you need the relay described at
+the end of this section.
+
+Do not try to infer this from a traceroute. ISPs use the CGNAT range for their
+own internal transit links, so a `100.x` hop appears on plenty of connections
+that are not behind CGNAT at all. Comparing the two addresses is the only
+reliable test.
+
+**2. Forward UDP port 9** to the PC's reserved address. On eero: the device's
+page, *Reservation & port forwarding*, *Open a port*. Protocol **UDP**,
+external and internal port both **9**.
+
+**3. Add a second entry in the WoL app** rather than editing one back and
+forth. Same MAC - that never changes, it is the payload that identifies the
+card - but the address is your home's public one instead of the private one.
+Leave the status-check field blank, since nothing is forwarded that would
+answer it.
+
+| Field | Home entry | Away entry |
+|---|---|---|
+| MAC | the wired MAC | *same* |
+| Address | the PC's reserved IP | your public IP |
+| Port | 9 | 9 |
+| Status check | the reserved IP | blank |
+
+**4. Test with Wi-Fi off**, on cellular, which is the only way to prove the
+packet really left the house. Verify it arrived using the listener in step 8 -
+a packet from your carrier's address is real proof, whereas one showing your
+*own* public address as the source means the router hairpinned it and you were
+still on Wi-Fi. (That hairpin behaviour is handy: the Away entry also works
+from home. The Home entry is still preferable there, being one hop instead of
+a round trip.)
+
+**5. Set up dynamic DNS**, or this breaks silently the day your ISP hands you
+a new address. Many routers have it built in, eero included (*Settings >
+Advanced networking > Dynamic DNS*). You then point the Away entry at a
+hostname that follows the address.
+
+**On security:** a magic packet can only power the machine on. It carries no
+payload that reaches anything running on it, and nothing is listening on that
+port while the PC is awake. The worst a stranger who guessed your address
+could do is turn your computer on.
+
+**If you are behind CGNAT**, forwarding is off the table and something at home
+has to send the packet for you: a Raspberry Pi, NAS, or an old phone that
+stays plugged in, reached over Tailscale; or Home Assistant, which has a
+Wake-on-LAN switch built in. Tailscale on the desktop itself does not help -
+the desktop is the thing that is asleep.
 
 ---
 
