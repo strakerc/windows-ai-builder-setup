@@ -1191,8 +1191,47 @@ a round trip.)
 
 **5. Set up dynamic DNS**, or this breaks silently the day your ISP hands you
 a new address. Many routers have it built in, eero included (*Settings >
-Advanced networking > Dynamic DNS*). You then point the Away entry at a
-hostname that follows the address.
+Advanced networking > Dynamic DNS*) - but on eero that needs a paid eero Plus
+subscription.
+
+The free alternative is DuckDNS plus a scheduled task on the PC. Sign in at
+duckdns.org with Google or GitHub, add a subdomain, and copy the token shown
+at the top of the page. Keep the credential in its own file, outside any repo
+and readable only by you:
+
+```
+C:\Users\<you>\duckdns\config.txt          # domain=<subdomain>  token=<token>
+C:\Users\<you>\duckdns\update-duckdns.ps1
+```
+
+The updater is one call wrapped in logging. Passing an **empty** `ip=` makes
+DuckDNS use the source address it observes, which is correct behind any NAT
+and avoids depending on a lookup service:
+
+```powershell
+Invoke-RestMethod "https://www.duckdns.org/update?domains=$domain&token=$token&ip="
+```
+
+Register it to run every 15 minutes with `StartWhenAvailable`, so a resume
+from sleep fires the missed run promptly instead of waiting out the interval:
+
+```powershell
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+  -RepetitionInterval (New-TimeSpan -Minutes 15) `
+  -RepetitionDuration (New-TimeSpan -Days 3650)   # TimeSpan::MaxValue is rejected
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable
+```
+
+Then point the Away entry at `<subdomain>.duckdns.org` instead of the raw
+address. **Check the spelling.** A `.com` for `.org` fails exactly like a
+broken setup, with no error from the app and nothing in any log.
+
+**The limitation of updating from the PC:** it only runs while the machine is
+awake, so if your ISP changes your address during a long sleep the hostname
+goes stale precisely when you need it. Residential addresses usually change at
+modem restarts, so this is unlikely rather than impossible. A scheduled wake
+every few hours to refresh the record closes the gap if it ever bites, and a
+router that does DDNS itself avoids it entirely.
 
 **On security:** a magic packet can only power the machine on. It carries no
 payload that reaches anything running on it, and nothing is listening on that
