@@ -1273,25 +1273,26 @@ stays plugged in, reached over Tailscale; or Home Assistant, which has a
 Wake-on-LAN switch built in. Tailscale on the desktop itself does not help -
 the desktop is the thing that is asleep.
 
-### If sites crawl on the wired connection (only if measured)
+### If sites or games crawl on the wired connection (only if measured)
 
-**Skip this unless you have measured the problem on your own machine.** It
-is a workaround for one driver or card misbehaving, not a general tuning
-step. Most wired connections are fine, and applying this blind just means
-running two connections for no reason.
+**Skip this unless you have measured the problem on your own machine.** Most
+wired connections are fine.
 
-> **Found 24 Sep 2026 on the reference machine** (Realtek RTL8125, drivers
-> 11.29.50 and 11.31.50, eero mesh). After switching from Wi-Fi to Ethernet
-> for Wake-on-LAN, signed-in Facebook, Messenger and claude.ai became very
-> slow in Chrome *and* Firefox. Speed tests, ping and DNS all looked normal
-> the whole time.
+> **Found 24-25 Sep 2026 on the reference machine** (Gigabyte X870E AORUS PRO,
+> Realtek RTL8125, eero mesh). After switching from Wi-Fi to Ethernet for
+> Wake-on-LAN, signed-in Facebook, Messenger and claude.ai became very slow in
+> Chrome *and* Firefox. Space Marine 2 stopped loading online progress and
+> offered only *New Game*. Speed tests, ping and DNS read normal the whole
+> time. **The cause was cFosSpeed**, a traffic shaper that Gigabyte Control
+> Center installs as "Gigabyte Speed". It was bound to the Ethernet card.
+> Two days of chasing the card, the driver and Windows settings came first,
+> because nobody looked at what else was filtering the card.
 
-**The symptom.** Speed tests read normal, and logged-out pages load fine,
-but signed-in pages and chat apps crawl: sign-in spinners hang and feeds
-take seconds to fill in. Speed tests and cached static files use TCP. Live
-signed-in data mostly arrives over **HTTP/3 (QUIC), which runs on UDP**, so a
-connection that mishandles UDP passes every speed test and still feels
-broken.
+**The symptom.** Speed tests and logged-out pages are fine, but signed-in
+pages, chat apps and online games crawl or fail to connect. Speed tests and
+cached static files use TCP. Live signed-in data mostly arrives over
+**HTTP/3 (QUIC), which runs on UDP**, and games lean on UDP too. A connection
+that mishandles UDP passes every speed test and still feels broken.
 
 **How to confirm it.** Load a slow signed-in page and read its resource
 timings in the DevTools console:
@@ -1305,45 +1306,62 @@ performance.getEntriesByType('resource')
                downloadMs: Math.round(e.responseEnd - e.responseStart) }))
 ```
 
-You have this problem only if **both** of these hold:
+The fault looks like this: `h3` responses of 100-500 KB take several seconds
+(about 0.2-0.5 Mbps), `h2` ones are fast, and the same `h3` responses are
+fast on Wi-Fi with the cable unplugged. On the reference machine, a 473 KB
+response took 6.5-7.1 s over Ethernet and 0.9 s over Wi-Fi.
 
-1. `h3` responses of 100-500 KB take several seconds to download (about
-   0.2-0.5 Mbps), while `h2` ones are fast. Setting
-   `chrome://flags/#enable-quic` to *Disabled* makes the same page fast.
-   Put the flag back afterwards.
-2. With the Ethernet cable **unplugged**, on Wi-Fi to the same router, the
-   same `h3` responses are fast. This is the test that tells a bad wired
-   path apart from a router or ISP that interferes with UDP. If Wi-Fi is
-   slow too, this section is not your fix.
+**Check first: is anything else filtering the card?** List what is bound to
+it. Anything besides the Microsoft entries (*WFP ... LightWeight Filter*,
+*QoS Packet Scheduler*) is a suspect: a traffic shaper, a "gaming" LAN
+optimizer, a VPN or a packet capture driver.
 
-On the reference machine: a 473 KB response took 6.5-7.1 s over Ethernet,
-0.9-1.1 s over Wi-Fi and 0.8 s with QUIC disabled.
+```powershell
+Get-NetAdapterBinding -Name Ethernet | Where-Object Enabled |
+  Select-Object DisplayName, ComponentID
+```
 
-**What did not fix it there.** Each one was tested and reverted, so there is
-no need to repeat them. They may still help on a different card:
+**The fix for cFosSpeed.** To test it, unbind it from the Ethernet card only.
+This is reversible with `Enable-NetAdapterBinding`. Run it in an
+**administrator** PowerShell:
 
-- Windows UDP Receive Offload: `netsh int udp set global uro=disabled`, even
-  after restarting the adapter
-- Windows UDP Send Offload: `netsh int udp set global uso=disabled`
-- The card's *UDP Checksum Offload (IPv4)* set to *Tx Enabled*
-- Updating the Realtek driver from Gigabyte's 11.29.50 to Realtek's 11.031.50
-  (NetAdapterCx)
+```powershell
+Disable-NetAdapterBinding -Name Ethernet -ComponentID cfosspeed
+```
+
+On the reference machine, HTTP/3 over Ethernet went from 0.2-0.5 Mbps to
+47-126 Mbps, and Space Marine 2's *Continue* came back. To remove it for good:
+
+1. *Settings > Apps > Installed apps > Gigabyte Speed > Uninstall*, then
+   reboot. This removes the `cFosSpeedS` service and its filter on every card.
+2. In GIGABYTE Control Center, remove or skip the Gigabyte Speed / LAN module,
+   and decline it when updates offer it. Otherwise Control Center can put it
+   back.
+3. Verify: `Get-Service cFosSpeedS` should fail, and the binding list above
+   should show no `cfosspeed`.
+
+**What did not fix it**, so there is no need to repeat these. Each was
+tested and reverted, and each was a dead end because cFosSpeed sat on top of
+them all:
+
+- Windows UDP Receive and Send Offload (`netsh int udp set global uro=disabled`
+  and `uso=disabled`)
+- The card's *UDP Checksum Offload* set to *Tx Enabled*
+- Updating the Realtek driver (11.29.50 to 11.031.50)
 - A different port on the router
-- MTU, network profile and QoS policy: identical on both connections
-
-The untried next step was Realtek's NDIS driver (10.80.50), which is a
-different driver design rather than a newer version.
+- MTU, network profile and QoS policy, which were identical on both connections
 
 **If you update the Realtek driver**, the install resets the card's advanced
 settings. It turned *Energy-Efficient Ethernet* and *Green Ethernet* back on
 and set *WOL & Shutdown Link Speed* to *10 Mbps First*. Put those back
 (Disabled, Disabled, Not Speed Down), then re-check the step 3 settings.
 
-**The workaround: keep the cable, prefer Wi-Fi.** The cable stays plugged in
-for Wake-on-LAN, and everyday traffic goes over Wi-Fi. A sleeping PC listens
-only on the wired card, and the magic packet in step 7 is addressed to the
-wired card's reserved IP, so waking is unaffected. Remote Desktop to
-`<wired-IP>` also keeps working. In an **administrator** PowerShell:
+**Fallback if the cause is something you can't remove: keep the cable,
+prefer Wi-Fi.** This was the stopgap before cFosSpeed was found. The cable
+stays up for Wake-on-LAN, since a sleeping PC listens only on the wired card
+and the step 7 packet goes to its reserved IP, while everyday traffic goes
+over Wi-Fi. Games that bind to the wired address may still use the bad path,
+so treat it as a last resort. In an administrator PowerShell:
 
 ```powershell
 Set-NetIPInterface -InterfaceAlias "Wi-Fi" -InterfaceMetric 10
@@ -1351,31 +1369,21 @@ Set-NetIPInterface -InterfaceAlias "Ethernet" -InterfaceMetric 50
 reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WcmSvc\GroupPolicy" /v fMinimizeConnections /t REG_DWORD /d 0 /f
 ```
 
-**The metrics alone do nothing.** Windows's default policy, *minimize the
-number of simultaneous connections*, keeps Wi-Fi associated whenever a cable
-is present but routes nothing over it. The routing table shows Wi-Fi
-preferred while every connection still leaves over the cable. The `reg add`
-line turns that policy off. After running all three, toggle Wi-Fi off and on
-and fully restart the browser, because existing connections stay on the
-cable until they close.
-
-**Verify the traffic really moved.** New connections should leave from the
-Wi-Fi address, not the wired one:
-
-```powershell
-curl.exe -s -o NUL -w "%{local_ip}`n" https://example.org/
-```
-
-**Then re-test Wake-on-LAN** (step 8). Check `powercfg -lastwake`, not the
-Power-Troubleshooter summary. On this board the summary named only the USB4
-host router, while `-lastwake` listed the Realtek card as well.
-
-**To undo it all:**
+The metrics alone do nothing. Windows's default policy, *minimize the number
+of simultaneous connections*, keeps Wi-Fi associated whenever a cable is
+present but routes nothing over it. The `reg add` line turns that off. Then
+toggle Wi-Fi and fully restart the browser, and check that new connections
+leave from the Wi-Fi address (`curl.exe -s -o NUL -w "%{local_ip}" https://example.org/`).
+To undo it:
 
 ```powershell
 Set-NetIPInterface -InterfaceAlias "Wi-Fi","Ethernet" -AutomaticMetric Enabled
 reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\WcmSvc\GroupPolicy" /v fMinimizeConnections /f
 ```
+
+**After any of this, re-test Wake-on-LAN** (step 8). Check `powercfg -lastwake`,
+not the Power-Troubleshooter summary. On this board the summary named only the
+USB4 host router, while `-lastwake` listed the Realtek card as well.
 
 ---
 
@@ -1469,7 +1477,7 @@ That lasts until the shell closes and changes nothing permanent.
 | Sleep looks like it lasts 1 second in Event Viewer | Kernel-Power resume event is stamped with the pre-sleep clock | Use `powercfg /lastwake` and Power-Troubleshooter instead |
 | Wake-on-LAN: packet arrives but the PC stays asleep | BIOS ErP on / Wake on LAN off, or Energy-Efficient Ethernet dropped the link | BIOS *Platform Power*; disable EEE and Green Ethernet |
 | Scheduled task fails with `2147942402` and no other clue | `pwsh.exe` given by name, but it is a Store build behind a `WindowsApps` alias Task Scheduler cannot follow | Use a real path to the executable (Part 8) |
-| Speed tests fine but signed-in sites crawl, only on Ethernet | HTTP/3 (UDP) mishandled on the wired path; confirm by measuring, since most machines don't have this | Measure first, then keep the cable and prefer Wi-Fi (Part 8, *If sites crawl on the wired connection*) |
+| Speed tests fine but signed-in sites crawl or online games won't connect, only on Ethernet | A third-party filter mangling UDP / HTTP/3 on the wired card; on Gigabyte boards, cFosSpeed ("Gigabyte Speed") | `Get-NetAdapterBinding -Name Ethernet`, then unbind or uninstall the filter (Part 8, *If sites or games crawl on the wired connection*) |
 | Wi-Fi given a lower metric but traffic still uses the cable | Windows's *minimize simultaneous connections* policy stops routing over Wi-Fi while a cable is present | Set `fMinimizeConnections` to 0, then toggle Wi-Fi (Part 8) |
 
 ---
