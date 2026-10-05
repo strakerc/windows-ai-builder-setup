@@ -796,7 +796,15 @@ want isn't there, it isn't reachable.
 1. Open every session you might want, in the desktop app, on the PC. Open
    means it has a process. Open a spare one in the repo you're most likely to
    need — see below for why.
-2. Don't reboot afterwards. Finish driver and Windows updates first.
+2. Don't reboot afterwards. Finish driver and Windows updates first. This
+   shows whether an update is already waiting on a restart:
+
+   ```powershell
+   Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'
+   ```
+
+   `True` means one is. Restart now, while you're at the machine, then go
+   back to step 1.
 3. Stop the sleep timer. The High Performance plan still sleeps after 15
    minutes on AC by default, which is long enough to lose the whole trip:
 
@@ -805,6 +813,39 @@ want isn't there, it isn't reachable.
    ```
 
    Put it back when you're home (`powercfg /change standby-timeout-ac 30`).
+4. Stop Windows Update from restarting the PC on its own. By default it
+   installs updates in the background and then restarts outside **active
+   hours**, which max out at 18 hours a day. Any trip longer than that leaves
+   a window where it can reboot and take every session with it, and nothing
+   tells you until the phone says *"Can't reach your computer"*.
+
+   This is a one-time setting, not a per-trip one. From an elevated prompt:
+
+   ```powershell
+   reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoRebootWithLoggedOnUsers /t REG_DWORD /d 1 /f
+   ```
+
+   Updates still download and install; only the restart waits until you do
+   it yourself. Settings → Windows Update will now say *"Some settings are
+   managed by your organization"* — that's this policy, and it's expected.
+   Two limits:
+
+   - It only holds while you're **signed in**. A locked screen counts; signing
+     out doesn't. Lock the PC (Win+L) when you leave, don't sign out.
+   - Microsoft documents it for Pro, Enterprise and Education. Windows Home
+     may ignore it.
+
+   So for a trip, also **pause updates**: Settings → Windows Update → *Pause
+   updates*, for at least as long as you'll be away. Nothing installs, so
+   nothing needs a restart, and it covers Home too. It resumes on its own
+   when the pause runs out. Pausing is capped at five weeks, and once it
+   lapses Windows installs what's pending before it lets you pause again.
+
+   To undo the policy (elevated):
+
+   ```powershell
+   reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoRebootWithLoggedOnUsers /f
+   ```
 
 #### Remote Control is a second, separate switch
 
@@ -1472,6 +1513,7 @@ That lasts until the shell closes and changes nothing permanent.
 | `opencode` not recognized right after `winget install` | Same stale-PATH issue as `gh` | Fully restart Terminal, then re-verify |
 | `opencode auth login` hangs or does nothing | Run from Claude Code or another non-interactive shell | Run it yourself in a real terminal tab |
 | Phone/web shows "Can't reach your computer" for one session while the PC is on | That session has no live process — a reboot killed it, or it hasn't been opened since | Open it on the PC, or ask a live session to send it a message (Part 8) |
+| Every session went dead overnight while you were away | Windows Update installed something and restarted outside active hours | Set `NoAutoRebootWithLoggedOnUsers` and pause updates before a trip (Part 8, *Before you leave the house*, step 4) |
 | PC went to sleep during a trip despite being "left on" | High Performance plan still sleeps after 15 min on AC | `powercfg /change standby-timeout-ac 0` |
 | Wake-on-LAN: packet never reaches the PC | Mesh router (eero) drops the subnet broadcast to wired clients | Address the packet to the PC's reserved IP, not `x.x.x.255` (Part 8, step 7) |
 | Sleep looks like it lasts 1 second in Event Viewer | Kernel-Power resume event is stamped with the pre-sleep clock | Use `powercfg /lastwake` and Power-Troubleshooter instead |
@@ -1506,7 +1548,9 @@ left out of the count above since OpenCode is optional.
 
 If you set up Part 8 on a desktop, `powercfg /devicequery wake_armed` should
 list the Ethernet adapter and `powercfg /a` should show `Standby (S3)` as
-available. Also optional.
+available. Also optional. If you set the Windows Update restart policy,
+`(Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU').NoAutoRebootWithLoggedOnUsers`
+should print `1`.
 
 ShareX has no CLI check — open it from the Start menu and confirm the tray
 icon appears.
